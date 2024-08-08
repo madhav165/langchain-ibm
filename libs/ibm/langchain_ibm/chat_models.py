@@ -521,7 +521,7 @@ class ChatWatsonx(BaseChatModel):
 
         if tools:
             chat_prompt = f"""
-You are Mixtral Chat function calling, an AI language model developed by Mistral AI. 
+You are a powerful Chat function calling AI language model. 
 You are a cautious assistant. You carefully follow instructions. You are helpful and 
 harmless and you follow ethical guidelines and promote positive behavior. Here are a 
 few of the tools available to you:
@@ -603,7 +603,7 @@ Remember to end your response with '</endoftext>'
 
         if tools:
             chat_prompt = f"""
-You are Mixtral Chat function calling, an AI language model developed by Mistral AI. 
+You are a powerful Chat function calling AI language model developed by Mistral AI. 
 You are a cautious assistant. You carefully follow instructions. You are helpful and 
 harmless and you follow ethical guidelines and promote positive behavior. Here are a 
 few of the tools available to you:
@@ -847,12 +847,12 @@ Remember to end your response with '</endoftext>'
             **kwargs: Any additional parameters to pass to the
                 :class:`~langchain.runnable.Runnable` constructor.
         """
-        bind_tools_supported_models = ["mistralai/mixtral-8x7b-instruct-v01"]
-        if self.model_id not in bind_tools_supported_models:
-            raise Warning(
-                f"bind_tools() method for ChatWatsonx support only "
-                f"following models: {bind_tools_supported_models}"
-            )
+        # bind_tools_supported_models = ["mistralai/mixtral-8x7b-instruct-v01"]
+        # if self.model_id not in bind_tools_supported_models:
+        #     raise Warning(
+        #         f"bind_tools() method for ChatWatsonx support only "
+        #         f"following models: {bind_tools_supported_models}"
+        #     )
 
         formatted_tools = [convert_to_openai_tool(tool) for tool in tools]
 
