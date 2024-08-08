@@ -705,6 +705,10 @@ Remember to end your response with '</endoftext>'
         elif self.model_id in [
             "meta-llama/llama-2-13b-chat",
             "meta-llama/llama-2-70b-chat",
+            "meta-llama/llama-3-8b-chat",
+            "meta-llama/llama-3-1-8b-chat",
+            "meta-llama/llama-3-70b-chat",
+            "meta-llama/llama-3-405b-chat",
         ]:
             for message in messages:
                 if message["role"] == "system":
