@@ -546,7 +546,7 @@ To use these tools you must always respond in JSON format containing `"type"` an
 ```
 </endoftext>
 
-Remember, even when answering to the user, you must still use this JSON format! 
+Remember, even when answering to the user, you must still use this JSON format! It starts with the word json followed by the actual JSON.
 If you'd like to ask how the user is doing you must write:
 
 ```json
@@ -628,7 +628,7 @@ To use these tools you must always respond in JSON format containing `"type"` an
 ```
 </endoftext>
 
-Remember, even when answering to the user, you must still use this JSON format! 
+Remember, even when answering to the user, you must still use this JSON format! It starts with the word json followed by the actual JSON.
 If you'd like to ask how the user is doing you must write:
 
 ```json
