@@ -733,7 +733,7 @@ Remember to end your response with '</endoftext>'
                 elif message["role"] == "assistant":
                     prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
                 else:
-                    prompt += "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
+                    prompt += "<|start_header_id|>user<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
 
         else:
             prompt = ChatPromptValue(
