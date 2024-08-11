@@ -521,13 +521,14 @@ class ChatWatsonx(BaseChatModel):
         tools = kwargs.get("tools")
 
         if tools:
+            json_list = [json.dumps(tool, indent=2) for tool in tools]
             chat_prompt = f"""
 You are a powerful tool calling AI language model. 
 You are a cautious assistant. You carefully follow instructions. You are helpful and 
 harmless and you follow ethical guidelines and promote positive behavior. Here are a 
 few of the tools available to you:
 [AVAILABLE_TOOLS]
-{json.dumps(tools[0], indent=2)}
+{ "\n".join(json_list)}
 [/AVAILABLE_TOOLS]
 To use these tools you must always respond in JSON format containing `"type"` and 
 `"function"` key-value pairs. Also `"function"` key-value pair always containing 
