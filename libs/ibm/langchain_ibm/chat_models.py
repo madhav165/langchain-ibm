@@ -521,7 +521,7 @@ class ChatWatsonx(BaseChatModel):
 
         if tools:
             chat_prompt = f"""
-You are a powerful Chat function calling AI language model. 
+You are a powerful tool calling AI language model. 
 You are a cautious assistant. You carefully follow instructions. You are helpful and 
 harmless and you follow ethical guidelines and promote positive behavior. Here are a 
 few of the tools available to you:
@@ -603,7 +603,7 @@ Remember to end your response with '</endoftext>'
 
         if tools:
             chat_prompt = f"""
-You are a powerful Chat function calling AI language model developed by Mistral AI. 
+You are a powerful tool calling AI language model. 
 You are a cautious assistant. You carefully follow instructions. You are helpful and 
 harmless and you follow ethical guidelines and promote positive behavior. Here are a 
 few of the tools available to you:
@@ -705,10 +705,10 @@ Remember to end your response with '</endoftext>'
         elif self.model_id in [
             "meta-llama/llama-2-13b-chat",
             "meta-llama/llama-2-70b-chat",
-            "meta-llama/llama-3-8b-chat",
-            "meta-llama/llama-3-1-8b-chat",
-            "meta-llama/llama-3-70b-chat",
-            "meta-llama/llama-3-405b-chat",
+            "meta-llama/llama-3-8b-instruct",
+            "meta-llama/llama-3-1-8b-instruct",
+            "meta-llama/llama-3-70b-instruct",
+            "meta-llama/llama-3-405b-instruct",
         ]:
             for message in messages:
                 if message["role"] == "system":
