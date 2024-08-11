@@ -707,10 +707,10 @@ Remember to end your response with '</endoftext>'
         elif self.model_id in [
             "meta-llama/llama-2-13b-chat",
             "meta-llama/llama-2-70b-chat",
-            # "meta-llama/llama-3-8b-instruct",
-            # "meta-llama/llama-3-1-8b-instruct",
-            # "meta-llama/llama-3-70b-instruct",
-            # "meta-llama/llama-3-405b-instruct",
+            "meta-llama/llama-3-8b-instruct",
+            "meta-llama/llama-3-1-8b-instruct",
+            "meta-llama/llama-3-70b-instruct",
+            "meta-llama/llama-3-405b-instruct",
         ]:
             for message in messages:
                 if message["role"] == "system":
@@ -720,20 +720,20 @@ Remember to end your response with '</endoftext>'
                 else:
                     prompt += message["content"] + "\n[/INST]\n"
 
-        elif self.model_id in [
-            "meta-llama/llama-3-8b-instruct",
-            "meta-llama/llama-3-1-8b-instruct",
-            "meta-llama/llama-3-70b-instruct",
-            "meta-llama/llama-3-405b-instruct",
-        ]:
-            prompt += "<|begin_of_text|>"
-            for message in messages:
-                if message["role"] == "system":
-                    prompt += "<|start_header_id|>system<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
-                elif message["role"] in ["assistant", "function", "tool"]:
-                    prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
-                else:
-                    prompt += "<|start_header_id|>user<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
+        # elif self.model_id in [
+        #     "meta-llama/llama-3-8b-instruct",
+        #     "meta-llama/llama-3-1-8b-instruct",
+        #     "meta-llama/llama-3-70b-instruct",
+        #     "meta-llama/llama-3-405b-instruct",
+        # ]:
+        #     prompt += "<|begin_of_text|>"
+        #     for message in messages:
+        #         if message["role"] == "system":
+        #             prompt += "<|start_header_id|>system<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
+        #         elif message["role"] in ["assistant", "function", "tool"]:
+        #             prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
+        #         else:
+        #             prompt += "<|start_header_id|>user<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
 
         else:
             prompt = ChatPromptValue(
