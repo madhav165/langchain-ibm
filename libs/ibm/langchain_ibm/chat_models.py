@@ -208,12 +208,13 @@ def _convert_message_to_dict(message: BaseMessage) -> dict:
         # If tool calls present, content null value should be None not empty string.
         if "function_call" in message_dict or "tool_calls" in message_dict:
             message_dict["content"] = message_dict["content"] or ""
-            message_dict["tool_calls"][0]["name"] = message_dict["tool_calls"][0][
-                "function"
-            ]["name"]
-            message_dict["tool_calls"][0]["args"] = json.loads(
-                message_dict["tool_calls"][0]["function"]["arguments"]
-            )
+            for i in range(len(message_dict["tool_calls"])):
+                message_dict["tool_calls"][i]["name"] = message_dict["tool_calls"][i][
+                    "function"
+                ]["name"]
+                message_dict["tool_calls"][i]["args"] = json.loads(
+                    message_dict["tool_calls"][i]["function"]["arguments"]
+                )
 
     elif isinstance(message, SystemMessage):
         message_dict["role"] = "system"
