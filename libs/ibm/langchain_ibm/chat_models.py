@@ -715,7 +715,7 @@ Remember to end your response with '</endoftext>'
             for message in messages:
                 if message["role"] == "system":
                     prompt += "[INST] <<SYS>>\n" + message["content"] + "<</SYS>>\n\n"
-                elif message["role"] == "assistant":
+                elif message["role"] in ["assistant", "function", "tool"]:
                     prompt += message["content"] + "\n[INST]\n\n"
                 else:
                     prompt += message["content"] + "\n[/INST]\n"
