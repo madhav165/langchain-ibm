@@ -707,10 +707,6 @@ Remember to end your response with '</endoftext>'
         elif self.model_id in [
             "meta-llama/llama-2-13b-chat",
             "meta-llama/llama-2-70b-chat",
-            "meta-llama/llama-3-8b-instruct",
-            "meta-llama/llama-3-1-8b-instruct",
-            "meta-llama/llama-3-70b-instruct",
-            "meta-llama/llama-3-405b-instruct",
         ]:
             for message in messages:
                 if message["role"] == "system":
@@ -719,6 +715,20 @@ Remember to end your response with '</endoftext>'
                     prompt += message["content"] + "\n[INST]\n\n"
                 else:
                     prompt += message["content"] + "\n[/INST]\n"
+
+        elif self.model_id in [
+            "meta-llama/llama-3-8b-instruct",
+            "meta-llama/llama-3-1-8b-instruct",
+            "meta-llama/llama-3-70b-instruct",
+            "meta-llama/llama-3-405b-instruct",
+        ]:
+            for message in messages:
+                if message["role"] == "system":
+                    prompt += "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n" + message["content"] + "<|eot_id|>"
+                elif message["role"] == "assistant":
+                    prompt += "<|start_header_id|>assistant<|end_header_id|>" + message["content"] + "<|eot_id|>"
+                else:
+                    prompt += "<|eot_id|><|start_header_id|>user<|end_header_id|>" + message["content"] + "<|eot_id|>"
 
         else:
             prompt = ChatPromptValue(
