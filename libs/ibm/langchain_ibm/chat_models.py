@@ -80,14 +80,14 @@ def _convert_dict_to_message(_dict: Mapping[str, Any], call_id: str) -> BaseMess
     """
     role = _dict.get("role")
     if role == "user":
-        return HumanMessage(content=_dict.get("generated_text", ""))
+        return HumanMessage(content=_dict.get("content", ""))
     else:
         additional_kwargs: Dict = {}
         tool_calls = []
         invalid_tool_calls: List[InvalidToolCall] = []
         content = ""
 
-        raw_tool_calls = _dict.get("generated_text", "")
+        raw_tool_calls = _dict.get("content", "")
 
         if "json" in raw_tool_calls:
             try:
@@ -110,10 +110,10 @@ def _convert_dict_to_message(_dict: Mapping[str, Any], call_id: str) -> BaseMess
                         tool_calls.append(parsed)
 
             except:  # noqa: E722
-                content = _dict.get("generated_text", "") or ""
+                content = _dict.get("content", "") or ""
 
         else:
-            content = _dict.get("generated_text", "") or ""
+            content = _dict.get("content", "") or ""
 
         return AIMessage(
             content=content,
@@ -236,7 +236,7 @@ def _convert_delta_to_message_chunk(
 ) -> BaseMessageChunk:
     id_ = "sample_id"
     role = cast(str, _dict.get("role"))
-    content = cast(str, _dict.get("generated_text") or "")
+    content = cast(str, _dict.get("content") or "")
     additional_kwargs: Dict = {}
     if _dict.get("function_call"):
         function_call = dict(_dict["function_call"])
