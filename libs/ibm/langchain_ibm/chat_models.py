@@ -80,7 +80,7 @@ def _convert_dict_to_message(_dict: Mapping[str, Any], call_id: str) -> BaseMess
     """
     role = _dict.get("role")
     if role == "user":
-        return HumanMessage(content=_dict.get("content", ""))
+        return HumanMessage(content=_dict.get("generated_text", ""))
     else:
         additional_kwargs: Dict = {}
         tool_calls = []
