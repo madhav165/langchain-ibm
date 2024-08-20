@@ -568,9 +568,10 @@ If you'd like to ask how the user is doing you must write:
 Remember to end your response with '</endoftext>'
 
 {chat_prompt}
-(reminder to respond in a JSON blob no matter what and use tools only if necessary)"""
+(reminder to respond in a JSON blob no matter what and use tools only if necessary)
+(also, keep json between "```json" and "```</endoftext>")"""
 
-            params = params | {"stop_sequences": ["</endoftext>"]}
+            params = params | {"stop_sequences": ["```</endoftext>"]}
 
         if "tools" in kwargs:
             del kwargs["tools"]
@@ -650,9 +651,10 @@ If you'd like to ask how the user is doing you must write:
 Remember to end your response with '</endoftext>'
 
 {chat_prompt[:-5]}
-(reminder to respond in a JSON blob no matter what and use tools only if necessary)"""
+(reminder to respond in a JSON blob no matter what and use tools only if necessary)
+(also, keep json between "```json" and "```</endoftext>")"""
 
-            params = params | {"stop_sequences": ["</endoftext>"]}
+            params = params | {"stop_sequences": ["```</endoftext>"]}
 
         if "tools" in kwargs:
             del kwargs["tools"]
