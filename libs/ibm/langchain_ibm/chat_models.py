@@ -87,7 +87,7 @@ def _convert_dict_to_message(_dict: Mapping[str, Any], call_id: str) -> BaseMess
         invalid_tool_calls: List[InvalidToolCall] = []
         content = ""
 
-        raw_tool_calls = _dict.get("content", "")
+        raw_tool_calls = _dict.get("generated_text", "")
 
         if "json" in raw_tool_calls:
             try:
@@ -110,10 +110,10 @@ def _convert_dict_to_message(_dict: Mapping[str, Any], call_id: str) -> BaseMess
                         tool_calls.append(parsed)
 
             except:  # noqa: E722
-                content = _dict.get("content", "") or ""
+                content = _dict.get("generated_text", "") or ""
 
         else:
-            content = _dict.get("content", "") or ""
+            content = _dict.get("generated_text", "") or ""
 
         return AIMessage(
             content=content,
