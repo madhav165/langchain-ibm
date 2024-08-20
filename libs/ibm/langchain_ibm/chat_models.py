@@ -236,7 +236,7 @@ def _convert_delta_to_message_chunk(
 ) -> BaseMessageChunk:
     id_ = "sample_id"
     role = cast(str, _dict.get("role"))
-    content = cast(str, _dict.get("content") or "")
+    content = cast(str, _dict.get("generated_text") or "")
     additional_kwargs: Dict = {}
     if _dict.get("function_call"):
         function_call = dict(_dict["function_call"])
