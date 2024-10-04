@@ -734,11 +734,11 @@ Remember to end your response with '</endoftext>'
             prompt += "<|begin_of_text|>"
             for message in messages:
                 if message["role"] == "system":
-                    prompt += "<|start_header_id|>system<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
+                    prompt += "<|start_header_id|>system<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>"
                 elif message["role"] in ["assistant", "function", "tool"]:
-                    prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
+                    prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>"
                 else:
-                    prompt += "<|start_header_id|>user<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>\n"
+                    prompt += "<|start_header_id|>user<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>"
 
         else:
             prompt = ChatPromptValue(
