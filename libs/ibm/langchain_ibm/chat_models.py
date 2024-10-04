@@ -740,6 +740,8 @@ Remember to end your response with '</endoftext>'
                 else:
                     prompt += "<|start_header_id|>user<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>"
 
+            prompt += "<|start_header_id|>assistant<|end_header_id|>\n"
+
         else:
             prompt = ChatPromptValue(
                 messages=convert_to_messages(messages) + [AIMessage(content="")]
