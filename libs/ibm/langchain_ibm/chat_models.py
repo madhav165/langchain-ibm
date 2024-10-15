@@ -604,7 +604,7 @@ class ChatWatsonx(BaseChatModel):
 
         message_dicts, params = self._create_message_dicts(messages, stop, **kwargs)
 
-        for m im messages:
+        for m in messages:
             print(m)
             print("**********")
 
