@@ -604,12 +604,14 @@ class ChatWatsonx(BaseChatModel):
 
         message_dicts, params = self._create_message_dicts(messages, stop, **kwargs)
 
+        for m im messages:
+            print(m)
+            print("**********")
+
         response = self.watsonx_model.chat(
             messages=message_dicts, **(kwargs | {"params": params})
         )
         print(f'{response=}')
-        tools = kwargs.get("tools")
-        print(f'{tools=}')
         return self._create_chat_result(response)
 
     def _stream(
