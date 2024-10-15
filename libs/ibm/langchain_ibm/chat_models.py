@@ -603,7 +603,7 @@ class ChatWatsonx(BaseChatModel):
             return generate_from_stream(stream_iter)
 
         message_dicts, params = self._create_message_dicts(messages, stop, **kwargs)
-        print(f'{message_dicts[-1]==}')
+        print(f'{message_dicts[-1]=}')
         print(f'{params=}')
 
         response = self.watsonx_model.chat(
