@@ -228,20 +228,20 @@ def _convert_message_to_dict(message: BaseMessage, model_id: str | None) -> dict
             message_dict["content"] = message_dict["content"] or None
 
         # Workaround for "mistralai/mistral-large" model when id < 9
-        if model_id and model_id.startswith("mistralai"):
-            tool_calls = message_dict.get("tool_calls", [])
-            if (
-                isinstance(tool_calls, list)
-                and tool_calls
-                and isinstance(tool_calls[0], dict)
-            ):
-                tool_call_id = tool_calls[0].get("id", "")
-                if len(tool_call_id) < 9:
-                    tool_call_id = _convert_tool_call_id_to_mistral_compatible(
-                        tool_call_id
-                    )
+        # if model_id and model_id.startswith("mistralai"):
+        tool_calls = message_dict.get("tool_calls", [])
+        if (
+            isinstance(tool_calls, list)
+            and tool_calls
+            and isinstance(tool_calls[0], dict)
+        ):
+            tool_call_id = tool_calls[0].get("id", "")
+            if len(tool_call_id) < 9:
+                tool_call_id = _convert_tool_call_id_to_mistral_compatible(
+                    tool_call_id
+                )
 
-                message_dict["tool_calls"][0]["id"] = tool_call_id
+            message_dict["tool_calls"][0]["id"] = tool_call_id
     elif isinstance(message, SystemMessage):
         message_dict["role"] = "system"
     elif isinstance(message, FunctionMessage):
@@ -251,12 +251,12 @@ def _convert_message_to_dict(message: BaseMessage, model_id: str | None) -> dict
         message_dict["tool_call_id"] = message.tool_call_id
 
         # Workaround for "mistralai/mistral-large" model when tool_call_id < 9
-        if model_id and model_id.startswith("mistralai"):
-            tool_call_id = message_dict.get("tool_call_id", "")
-            if len(tool_call_id) < 9:
-                tool_call_id = _convert_tool_call_id_to_mistral_compatible(tool_call_id)
+        # if model_id and model_id.startswith("mistralai"):
+        tool_call_id = message_dict.get("tool_call_id", "")
+        if len(tool_call_id) < 9:
+            tool_call_id = _convert_tool_call_id_to_mistral_compatible(tool_call_id)
 
-            message_dict["tool_call_id"] = tool_call_id
+        message_dict["tool_call_id"] = tool_call_id
 
         supported_props = {"content", "role", "tool_call_id"}
         message_dict = {k: v for k, v in message_dict.items() if k in supported_props}
