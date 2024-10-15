@@ -225,15 +225,23 @@ def _convert_message_to_dict(message: BaseMessage, model_id: str | None) -> dict
             pass
         # If tool calls present, content null value should be None not empty string.
         if "function_call" in message_dict or "tool_calls" in message_dict:
-            message_dict["content"] = message_dict["content"] or ""
-            for i in range(len(message_dict["tool_calls"])):
-                message_dict["tool_calls"][i]["name"] = message_dict["tool_calls"][i][
-                    "function"
-                ]["name"]
-                message_dict["tool_calls"][i]["args"] = json.loads(
-                    message_dict["tool_calls"][i]["function"]["arguments"]
-                )
+            message_dict["content"] = message_dict["content"] or None
 
+        # Workaround for "mistralai/mistral-large" model when id < 9
+        if model_id and model_id.startswith("mistralai"):
+            tool_calls = message_dict.get("tool_calls", [])
+            if (
+                isinstance(tool_calls, list)
+                and tool_calls
+                and isinstance(tool_calls[0], dict)
+            ):
+                tool_call_id = tool_calls[0].get("id", "")
+                if len(tool_call_id) < 9:
+                    tool_call_id = _convert_tool_call_id_to_mistral_compatible(
+                        tool_call_id
+                    )
+
+                message_dict["tool_calls"][0]["id"] = tool_call_id
     elif isinstance(message, SystemMessage):
         message_dict["role"] = "system"
     elif isinstance(message, FunctionMessage):
@@ -595,80 +603,9 @@ class ChatWatsonx(BaseChatModel):
             return generate_from_stream(stream_iter)
 
         message_dicts, params = self._create_message_dicts(messages, stop, **kwargs)
-        if message_dicts[-1].get("role") == "tool":
-            chat_prompt = (
-                "User: Please summarize given sentences into "
-                "JSON containing Final Answer: '"
-            )
-            for message in message_dicts:
-                if message["content"]:
-                    chat_prompt += message["content"] + "\n"
-            chat_prompt += "'"
-        else:
-            chat_prompt = self._create_chat_prompt(message_dicts)
 
-        tools = kwargs.get("tools")
-
-        if tools:
-            json_list = [json.dumps(tool, indent=2) for tool in tools]
-            json_list_str = "\n".join(json_list)
-            chat_prompt = f"""
-You are a powerful tool calling AI language model. 
-You are a cautious assistant. You carefully follow instructions. You are helpful and 
-harmless and you follow ethical guidelines and promote positive behavior. Here are a 
-few of the tools available to you:
-[AVAILABLE_TOOLS]
-{ json_list_str}
-[/AVAILABLE_TOOLS]
-To use these tools you must always respond in JSON format containing `"type"` and 
-`"function"` key-value pairs. Also `"function"` key-value pair always containing 
-`"name"` and `"arguments"` key-value pairs. For example, to answer the question, 
-"What is a length of word think?" you must use the get_word_length tool like so:
-
-```json
-{{
-    "type": "function",
-    "function": {{
-        "name": "get_word_length",
-        "arguments": {{
-            "word": "think"
-        }}
-    }}
-}}
-```
-</endoftext>
-
-Remember, even when answering to the user, you must still use this JSON format! It starts with the word json followed by the actual JSON.
-If you'd like to ask how the user is doing you must write:
-
-```json
-{{
-    "type": "function",
-    "function": {{
-        "name": "Final Answer",
-        "arguments": {{
-            "output": "How are you today?"
-        }}
-    }}
-}}
-```
-</endoftext>
-
-Remember to end your response with '</endoftext>'
-
-{chat_prompt}
-(reminder to respond in a JSON blob no matter what and use tools only if necessary)
-(also, keep json between "```json" and "```</endoftext>")"""
-
-            params = params | {"stop_sequences": ["```</endoftext>"]}
-
-        if "tools" in kwargs:
-            del kwargs["tools"]
-        if "tool_choice" in kwargs:
-            del kwargs["tool_choice"]
-
-        response = self.watsonx_model.generate(
-            prompt=chat_prompt, **(kwargs | {"params": params})
+        response = self.watsonx_model.chat(
+            messages=message_dicts, **(kwargs | {"params": params})
         )
         return self._create_chat_result(response)
 
@@ -680,75 +617,6 @@ Remember to end your response with '</endoftext>'
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         message_dicts, params = self._create_message_dicts(messages, stop, **kwargs)
-        if message_dicts[-1].get("role") == "tool":
-            chat_prompt = (
-                "User: Please summarize given sentences into JSON "
-                "containing Final Answer: '"
-            )
-            for message in message_dicts:
-                if message["content"]:
-                    chat_prompt += message["content"] + "\n"
-            chat_prompt += "'"
-        else:
-            chat_prompt = self._create_chat_prompt(message_dicts)
-
-        tools = kwargs.get("tools")
-
-        if tools:
-            chat_prompt = f"""
-You are a powerful tool calling AI language model. 
-You are a cautious assistant. You carefully follow instructions. You are helpful and 
-harmless and you follow ethical guidelines and promote positive behavior. Here are a 
-few of the tools available to you:
-[AVAILABLE_TOOLS]
-{json.dumps(tools[0], indent=2)}
-[/AVAILABLE_TOOLS]
-To use these tools you must always respond in JSON format containing `"type"` and 
-`"function"` key-value pairs. Also `"function"` key-value pair always containing 
-`"name"` and `"arguments"` key-value pairs. For example, to answer the question, 
-"What is a length of word think?" you must use the get_word_length tool like so:
-
-```json
-{{
-    "type": "function",
-    "function": {{
-        "name": "get_word_length",
-        "arguments": {{
-            "word": "think"
-        }}
-    }}
-}}
-```
-</endoftext>
-
-Remember, even when answering to the user, you must still use this JSON format! It starts with the word json followed by the actual JSON.
-If you'd like to ask how the user is doing you must write:
-
-```json
-{{
-    "type": "function",
-    "function": {{
-        "name": "Final Answer",
-        "arguments": {{
-            "output": "How are you today?"
-        }}
-    }}
-}}
-```
-</endoftext>
-
-Remember to end your response with '</endoftext>'
-
-{chat_prompt[:-5]}
-(reminder to respond in a JSON blob no matter what and use tools only if necessary)
-(also, keep json between "```json" and "```</endoftext>")"""
-
-            params = params | {"stop_sequences": ["```</endoftext>"]}
-
-        if "tools" in kwargs:
-            del kwargs["tools"]
-        if "tool_choice" in kwargs:
-            del kwargs["tool_choice"]
 
         default_chunk_class: Type[BaseMessageChunk] = AIMessageChunk
         base_generation_info: dict = {}
@@ -776,68 +644,20 @@ Remember to end your response with '</endoftext>'
                 run_manager.on_llm_new_token(
                     generation_chunk.text, chunk=generation_chunk, logprobs=logprobs
                 )
+            if hasattr(generation_chunk.message, "tool_calls") and isinstance(
+                generation_chunk.message.tool_calls, list
+            ):
+                first_tool_call = (
+                    generation_chunk.message.tool_calls[0]
+                    if generation_chunk.message.tool_calls
+                    else None
+                )
+                if isinstance(first_tool_call, dict) and first_tool_call.get("name"):
+                    is_first_tool_chunk = False
 
-            yield chunk
+            is_first_chunk = False
 
-    def _create_chat_prompt(self, messages: List[Dict[str, Any]]) -> str:
-        prompt = ""
-
-        if self.model_id in ["ibm/granite-13b-chat-v1", "ibm/granite-13b-chat-v2"]:
-            for message in messages:
-                if message["role"] == "system":
-                    prompt += "<|system|>\n" + message["content"] + "\n\n"
-                elif message["role"] == "assistant":
-                    prompt += "<|assistant|>\n" + message["content"] + "\n\n"
-                elif message["role"] == "function":
-                    prompt += "<|function|>\n" + message["content"] + "\n\n"
-                elif message["role"] == "tool":
-                    prompt += "<|tool|>\n" + message["content"] + "\n\n"
-                else:
-                    prompt += "<|user|>:\n" + message["content"] + "\n\n"
-
-            prompt += "<|assistant|>\n"
-
-        elif self.model_id in [
-            "meta-llama/llama-2-13b-chat",
-            "meta-llama/llama-2-70b-chat",
-            # "meta-llama/llama-3-8b-instruct",
-            # "meta-llama/llama-3-1-8b-instruct",
-            # "meta-llama/llama-3-70b-instruct",
-            # "meta-llama/llama-3-1-70b-instruct",
-            # "meta-llama/llama-3-405b-instruct",
-        ]:
-            for message in messages:
-                if message["role"] == "system":
-                    prompt += "[INST] <<SYS>>\n" + message["content"] + "<</SYS>>\n\n"
-                elif message["role"] in ["assistant", "function", "tool"]:
-                    prompt += message["content"] + "\n[INST]\n\n"
-                else:
-                    prompt += message["content"] + "\n[/INST]\n"
-
-        elif self.model_id in [
-            "meta-llama/llama-3-8b-instruct",
-            "meta-llama/llama-3-1-8b-instruct",
-            "meta-llama/llama-3-70b-instruct",
-            "meta-llama/llama-3-1-70b-instruct",
-            "meta-llama/llama-3-405b-instruct",
-        ]:
-            prompt += "<|begin_of_text|>"
-            for message in messages:
-                if message["role"] == "system":
-                    prompt += "<|start_header_id|>system<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>"
-                elif message["role"] in ["assistant", "function", "tool"]:
-                    prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>"
-                else:
-                    prompt += "<|start_header_id|>user<|end_header_id|>\n\n" + message["content"] + "<|eot_id|>"
-
-            prompt += "<|start_header_id|>assistant<|end_header_id|>\n"
-
-        else:
-            prompt = ChatPromptValue(
-                messages=convert_to_messages(messages) + [AIMessage(content="")]
-            ).to_string()
-
-        return prompt
+            yield generation_chunk
 
     def _create_message_dicts(
         self, messages: List[BaseMessage], stop: Optional[List[str]], **kwargs: Any
@@ -970,16 +790,18 @@ Remember to end your response with '</endoftext>'
                 Can be  a dictionary, pydantic model, callable, or BaseTool. Pydantic
                 models, callables, and BaseTools will be automatically converted to
                 their schema dictionary representation.
-            **kwargs: Any additional parameters to pass to the
-                :class:`~langchain.runnable.Runnable` constructor.
-        """
-        # bind_tools_supported_models = ["mistralai/mixtral-8x7b-instruct-v01"]
-        # if self.model_id not in bind_tools_supported_models:
-        #     raise Warning(
-        #         f"bind_tools() method for ChatWatsonx support only "
-        #         f"following models: {bind_tools_supported_models}"
-        #     )
+            tool_choice: Which tool to require the model to call.
+                Options are:
+                    - str of the form ``"<<tool_name>>"``: calls <<tool_name>> tool.
+                    - ``"auto"``: automatically selects a tool (including no tool).
+                    - ``"none"``: does not call a tool.
+                    - ``"any"`` or ``"required"`` or ``True``: force at least one tool to be called.
+                    - dict of the form ``{"type": "function", "function": {"name": <<tool_name>>}}``: calls <<tool_name>> tool.
+                    - ``False`` or ``None``: no effect, default OpenAI behavior.
 
+            kwargs: Any additional parameters are passed directly to
+                ``self.bind(**kwargs)``.
+        """  # noqa: E501
         formatted_tools = [convert_to_openai_tool(tool) for tool in tools]
         if tool_choice:
             if isinstance(tool_choice, str):
