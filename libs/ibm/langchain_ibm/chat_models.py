@@ -653,7 +653,10 @@ Remember to end your response with '</endoftext>'
 
 (reminder to respond in a JSON blob no matter what and use tools only if necessary)
 (also, keep json between "```json" and "```</endoftext>")"""
-            messages.insert(0, SystemMessage(content=system_prompt))
+            if isinstance(messages[0], SystemMessage):
+                messages[0] = SystemMessage(content=system_prompt)
+            else:
+                messages.insert(0, SystemMessage(content=system_prompt))
             
         message_dicts, params = self._create_message_dicts(messages, stop, **kwargs)
 
