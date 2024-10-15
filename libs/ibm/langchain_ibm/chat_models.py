@@ -660,6 +660,13 @@ Remember to end your response with '</endoftext>'
             
         message_dicts, params = self._create_message_dicts(messages, stop, **kwargs)
 
+        params = params | {"stop_sequences": ["```</endoftext>"]}
+
+        if "tools" in kwargs:
+            del kwargs["tools"]
+        if "tool_choice" in kwargs:
+            del kwargs["tool_choice"]
+
         for m in messages:
             print(m)
             print("**********")
