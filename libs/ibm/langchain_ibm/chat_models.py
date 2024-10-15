@@ -662,10 +662,10 @@ Remember to end your response with '</endoftext>'
 
         params = params | {"stop_sequences": ["```</endoftext>"]}
 
-        if "tools" in kwargs:
-            del kwargs["tools"]
-        if "tool_choice" in kwargs:
-            del kwargs["tool_choice"]
+        # if "tools" in kwargs:
+        #     del kwargs["tools"]
+        # if "tool_choice" in kwargs:
+        #     del kwargs["tool_choice"]
 
         for m in messages:
             print(m)
