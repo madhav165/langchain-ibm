@@ -1,7 +1,8 @@
+"""IBM watsonx.ai large language chat models wrapper."""
+
+import hashlib
 import json
 import logging
-import os
-from datetime import datetime
 from operator import itemgetter
 from typing import (
     Any,
@@ -20,8 +21,12 @@ from typing import (
     cast,
 )
 
-from ibm_watsonx_ai import Credentials  # type: ignore
+from ibm_watsonx_ai import APIClient, Credentials  # type: ignore
 from ibm_watsonx_ai.foundation_models import ModelInference  # type: ignore
+from ibm_watsonx_ai.foundation_models.schema import (  # type: ignore
+    BaseSchema,
+    TextChatParameters,
+)
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.chat_models import (
@@ -46,24 +51,30 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
     ToolMessageChunk,
-    convert_to_messages,
 )
+from langchain_core.messages.ai import UsageMetadata
+from langchain_core.messages.tool import tool_call_chunk
 from langchain_core.output_parsers import JsonOutputParser, PydanticOutputParser
 from langchain_core.output_parsers.base import OutputParserLike
 from langchain_core.output_parsers.openai_tools import (
     JsonOutputKeyToolsParser,
     PydanticToolsParser,
+    make_invalid_tool_call,
+    parse_tool_call,
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from langchain_core.prompt_values import ChatPromptValue
-from langchain_core.pydantic_v1 import BaseModel, Field, SecretStr, root_validator
 from langchain_core.runnables import Runnable, RunnableMap, RunnablePassthrough
 from langchain_core.tools import BaseTool
-from langchain_core.utils import convert_to_secret_str, get_from_dict_or_env
 from langchain_core.utils.function_calling import (
     convert_to_openai_function,
     convert_to_openai_tool,
 )
+from langchain_core.utils.pydantic import is_basemodel_subclass
+from langchain_core.utils.utils import secret_from_env
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from typing_extensions import Self
+
+from langchain_ibm.utils import check_for_attribute
 
 logger = logging.getLogger(__name__)
 
@@ -79,48 +90,53 @@ def _convert_dict_to_message(_dict: Mapping[str, Any], call_id: str) -> BaseMess
         The LangChain message.
     """
     role = _dict.get("role")
+    name = _dict.get("name")
+    id_ = call_id
     if role == "user":
-        return HumanMessage(content=_dict.get("generated_text", ""))
-    else:
+        return HumanMessage(content=_dict.get("content", ""), id=id_, name=name)
+    elif role == "assistant":
+        content = _dict.get("content", "") or ""
         additional_kwargs: Dict = {}
+        if function_call := _dict.get("function_call"):
+            additional_kwargs["function_call"] = dict(function_call)
         tool_calls = []
-        invalid_tool_calls: List[InvalidToolCall] = []
-        content = ""
-
-        raw_tool_calls = _dict.get("generated_text", "")
-
-        if "json" in raw_tool_calls:
-            try:
-                split_raw_tool_calls = raw_tool_calls.split("\n\n")
-                for raw_tool_call in split_raw_tool_calls:
-                    if "json" in raw_tool_call:
-                        json_parts = JsonOutputParser().parse(raw_tool_call)
-
-                        if json_parts["function"]["name"] == "Final Answer":
-                            content = json_parts["function"]["arguments"]["output"]
-                            break
-
-                        additional_kwargs["tool_calls"] = json_parts
-
-                        parsed = {
-                            "name": json_parts["function"]["name"] or "",
-                            "args": json_parts["function"]["arguments"] or {},
-                            "id": call_id,
-                        }
-                        tool_calls.append(parsed)
-
-            except:  # noqa: E722
-                content = _dict.get("generated_text", "") or ""
-
-        else:
-            content = _dict.get("generated_text", "") or ""
-
+        invalid_tool_calls = []
+        if raw_tool_calls := _dict.get("tool_calls"):
+            additional_kwargs["tool_calls"] = raw_tool_calls
+            for raw_tool_call in raw_tool_calls:
+                try:
+                    tool_calls.append(parse_tool_call(raw_tool_call, return_id=True))
+                except Exception as e:
+                    invalid_tool_calls.append(
+                        make_invalid_tool_call(raw_tool_call, str(e))
+                    )
         return AIMessage(
             content=content,
             additional_kwargs=additional_kwargs,
+            name=name,
+            id=id_,
             tool_calls=tool_calls,
             invalid_tool_calls=invalid_tool_calls,
         )
+    elif role == "system":
+        return SystemMessage(content=_dict.get("content", ""), name=name, id=id_)
+    elif role == "function":
+        return FunctionMessage(
+            content=_dict.get("content", ""), name=cast(str, _dict.get("name")), id=id_
+        )
+    elif role == "tool":
+        additional_kwargs = {}
+        if "name" in _dict:
+            additional_kwargs["name"] = _dict["name"]
+        return ToolMessage(
+            content=_dict.get("content", ""),
+            tool_call_id=cast(str, _dict.get("tool_call_id")),
+            additional_kwargs=additional_kwargs,
+            name=name,
+            id=id_,
+        )
+    else:
+        return ChatMessage(content=_dict.get("content", ""), role=role, id=id_)  # type: ignore[arg-type]
 
 
 def _format_message_content(content: Any) -> Any:
@@ -143,35 +159,37 @@ def _format_message_content(content: Any) -> Any:
     return formatted_content
 
 
-def _lc_tool_call_to_openai_tool_call(tool_call: ToolCall) -> dict:
-    return {
-        "type": "function",
-        "id": tool_call["id"],
-        "function": {
-            "name": tool_call["name"],
-            "arguments": json.dumps(tool_call["args"]),
-        },
-    }
+def _base62_encode(num: int) -> str:
+    """Encodes a number in base62 and ensures result is of a specified length."""
+    base62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if num == 0:
+        return base62[0]
+    arr = []
+    base = len(base62)
+    while num:
+        num, rem = divmod(num, base)
+        arr.append(base62[rem])
+    arr.reverse()
+    return "".join(arr)
 
 
-def _lc_invalid_tool_call_to_openai_tool_call(
-    invalid_tool_call: InvalidToolCall,
-) -> dict:
-    return {
-        "type": "function",
-        "id": invalid_tool_call["id"],
-        "function": {
-            "name": invalid_tool_call["name"],
-            "arguments": invalid_tool_call["args"],
-        },
-    }
+def _convert_tool_call_id_to_mistral_compatible(tool_call_id: str) -> str:
+    """Convert a tool call ID to a Mistral-compatible format"""
+    hash_bytes = hashlib.sha256(tool_call_id.encode()).digest()
+    hash_int = int.from_bytes(hash_bytes, byteorder="big")
+    base62_str = _base62_encode(hash_int)
+    if len(base62_str) >= 9:
+        return base62_str[:9]
+    else:
+        return base62_str.rjust(9, "0")
 
 
-def _convert_message_to_dict(message: BaseMessage) -> dict:
+def _convert_message_to_dict(message: BaseMessage, model_id: str | None) -> dict:
     """Convert a LangChain message to a dictionary.
 
     Args:
         message: The LangChain message.
+        model_id: Type of model to use.
 
     Returns:
         The dictionary.
@@ -191,9 +209,9 @@ def _convert_message_to_dict(message: BaseMessage) -> dict:
             message_dict["function_call"] = message.additional_kwargs["function_call"]
         if message.tool_calls or message.invalid_tool_calls:
             message_dict["tool_calls"] = [
-                _lc_tool_call_to_openai_tool_call(tc) for tc in message.tool_calls
+                _lc_tool_call_to_watsonx_tool_call(tc) for tc in message.tool_calls
             ] + [
-                _lc_invalid_tool_call_to_openai_tool_call(tc)
+                _lc_invalid_tool_call_to_watsonx_tool_call(tc)
                 for tc in message.invalid_tool_calls
             ]
         elif "tool_calls" in message.additional_kwargs:
@@ -224,6 +242,14 @@ def _convert_message_to_dict(message: BaseMessage) -> dict:
         message_dict["role"] = "tool"
         message_dict["tool_call_id"] = message.tool_call_id
 
+        # Workaround for "mistralai/mistral-large" model when tool_call_id < 9
+        if model_id and model_id.startswith("mistralai"):
+            tool_call_id = message_dict.get("tool_call_id", "")
+            if len(tool_call_id) < 9:
+                tool_call_id = _convert_tool_call_id_to_mistral_compatible(tool_call_id)
+
+            message_dict["tool_call_id"] = tool_call_id
+
         supported_props = {"content", "role", "tool_call_id"}
         message_dict = {k: v for k, v in message_dict.items() if k in supported_props}
     else:
@@ -232,11 +258,14 @@ def _convert_message_to_dict(message: BaseMessage) -> dict:
 
 
 def _convert_delta_to_message_chunk(
-    _dict: Mapping[str, Any], default_class: Type[BaseMessageChunk]
+    _dict: Mapping[str, Any],
+    default_class: Type[BaseMessageChunk],
+    call_id: str,
+    is_first_tool_chunk: bool,
 ) -> BaseMessageChunk:
-    id_ = "sample_id"
+    id_ = call_id
     role = cast(str, _dict.get("role"))
-    content = cast(str, _dict.get("generated_text") or "")
+    content = cast(str, _dict.get("content") or "")
     additional_kwargs: Dict = {}
     if _dict.get("function_call"):
         function_call = dict(_dict["function_call"])
@@ -248,12 +277,12 @@ def _convert_delta_to_message_chunk(
         additional_kwargs["tool_calls"] = raw_tool_calls
         try:
             tool_call_chunks = [
-                {
-                    "name": rtc["function"].get("name"),
-                    "args": rtc["function"].get("arguments"),
-                    "id": rtc.get("id"),
-                    "index": rtc["index"],
-                }
+                tool_call_chunk(
+                    name=rtc["function"].get("name") if is_first_tool_chunk else None,
+                    args=rtc["function"].get("arguments"),
+                    id=rtc.get("id") if is_first_tool_chunk else None,
+                    index=rtc["index"],
+                )
                 for rtc in raw_tool_calls
             ]
         except KeyError:
@@ -282,17 +311,74 @@ def _convert_delta_to_message_chunk(
         return default_class(content=content, id=id_)  # type: ignore
 
 
+def _convert_chunk_to_generation_chunk(
+    chunk: dict,
+    default_chunk_class: Type,
+    base_generation_info: Optional[Dict],
+    is_first_chunk: bool,
+    is_first_tool_chunk: bool,
+) -> Optional[ChatGenerationChunk]:
+    token_usage = chunk.get("usage")
+    choices = chunk.get("choices", [])
+
+    usage_metadata: Optional[UsageMetadata] = (
+        _create_usage_metadata(token_usage, is_first_chunk) if token_usage else None
+    )
+
+    if len(choices) == 0:
+        # logprobs is implicitly None
+        generation_chunk = ChatGenerationChunk(
+            message=default_chunk_class(content="", usage_metadata=usage_metadata)
+        )
+        return generation_chunk
+
+    choice = choices[0]
+    if choice["delta"] is None:
+        return None
+
+    message_chunk = _convert_delta_to_message_chunk(
+        choice["delta"], default_chunk_class, chunk["id"], is_first_tool_chunk
+    )
+    generation_info = {**base_generation_info} if base_generation_info else {}
+
+    if finish_reason := choice.get("finish_reason"):
+        generation_info["finish_reason"] = finish_reason
+        if model_name := chunk.get("model"):
+            generation_info["model_name"] = model_name
+        if system_fingerprint := chunk.get("system_fingerprint"):
+            generation_info["system_fingerprint"] = system_fingerprint
+
+    logprobs = choice.get("logprobs")
+    if logprobs:
+        generation_info["logprobs"] = logprobs
+
+    if usage_metadata and isinstance(message_chunk, AIMessageChunk):
+        message_chunk.usage_metadata = usage_metadata
+
+    generation_chunk = ChatGenerationChunk(
+        message=message_chunk, generation_info=generation_info or None
+    )
+    return generation_chunk
+
+
 class _FunctionCall(TypedDict):
     name: str
 
 
 class ChatWatsonx(BaseChatModel):
-    """
-    IBM watsonx.ai large language chat models.
+    """IBM watsonx.ai large language chat models.
 
-    To use, you should have ``langchain_ibm`` python package installed,
-    and the environment variable ``WATSONX_APIKEY`` set with your API key, or pass
-    it as a named parameter to the constructor.
+    .. dropdown:: Setup
+        :open:
+
+        To use, you should have ``langchain_ibm`` python package installed,
+        and the environment variable ``WATSONX_APIKEY`` set with your API key, or pass
+        it as a named parameter to the constructor.
+
+        .. code-block:: bash
+
+            pip install -U langchain-ibm
+            export WATSONX_APIKEY="your-api-key"
 
 
     Example:
@@ -318,58 +404,72 @@ class ChatWatsonx(BaseChatModel):
             )
     """
 
-    model_id: str = ""
+    model_id: Optional[str] = None
     """Type of model to use."""
 
-    deployment_id: str = ""
+    deployment_id: Optional[str] = None
     """Type of deployed model to use."""
 
-    project_id: str = ""
+    project_id: Optional[str] = None
     """ID of the Watson Studio project."""
 
-    space_id: str = ""
+    space_id: Optional[str] = None
     """ID of the Watson Studio space."""
 
-    url: Optional[SecretStr] = None
-    """Url to Watson Machine Learning or CPD instance"""
+    url: SecretStr = Field(
+        alias="url", default_factory=secret_from_env("WATSONX_URL", default=None)
+    )
+    """URL to the Watson Machine Learning or CPD instance."""
 
-    apikey: Optional[SecretStr] = None
-    """Apikey to Watson Machine Learning or CPD instance"""
+    apikey: Optional[SecretStr] = Field(
+        alias="apikey", default_factory=secret_from_env("WATSONX_APIKEY", default=None)
+    )
+    """API key to the Watson Machine Learning or CPD instance."""
 
-    token: Optional[SecretStr] = None
-    """Token to CPD instance"""
+    token: Optional[SecretStr] = Field(
+        alias="token", default_factory=secret_from_env("WATSONX_TOKEN", default=None)
+    )
+    """Token to the CPD instance."""
 
-    password: Optional[SecretStr] = None
-    """Password to CPD instance"""
+    password: Optional[SecretStr] = Field(
+        alias="password",
+        default_factory=secret_from_env("WATSONX_PASSWORD", default=None),
+    )
+    """Password to the CPD instance."""
 
-    username: Optional[SecretStr] = None
-    """Username to CPD instance"""
+    username: Optional[SecretStr] = Field(
+        alias="username",
+        default_factory=secret_from_env("WATSONX_USERNAME", default=None),
+    )
+    """Username to the CPD instance."""
 
-    instance_id: Optional[SecretStr] = None
-    """Instance_id of CPD instance"""
+    instance_id: Optional[SecretStr] = Field(
+        alias="instance_id",
+        default_factory=secret_from_env("WATSONX_INSTANCE_ID", default=None),
+    )
+    """Instance_id of the CPD instance."""
 
     version: Optional[SecretStr] = None
-    """Version of CPD instance"""
+    """Version of the CPD instance."""
 
-    params: Optional[dict] = None
-    """Chat Model parameters to use during generate requests."""
+    params: Optional[Union[dict, TextChatParameters]] = None
+    """Model parameters to use during request generation."""
 
-    verify: Union[str, bool] = ""
-    """User can pass as verify one of following:
-        the path to a CA_BUNDLE file
-        the path of directory with certificates of trusted CAs
-        True - default path to truststore will be taken
-        False - no verification will be made"""
+    verify: Union[str, bool, None] = None
+    """You can pass one of following as verify:
+        * the path to a CA_BUNDLE file
+        * the path of directory with certificates of trusted CAs
+        * True - default path to truststore will be taken
+        * False - no verification will be made"""
 
     streaming: bool = False
     """ Whether to stream the results or not. """
 
     watsonx_model: ModelInference = Field(default=None, exclude=True)  #: :meta private:
 
-    class Config:
-        """Configuration for this pydantic object."""
+    watsonx_client: Optional[APIClient] = Field(default=None, exclude=True)
 
-        allow_population_by_field_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
     def is_lc_serializable(cls) -> bool:
@@ -377,7 +477,7 @@ class ChatWatsonx(BaseChatModel):
 
     @property
     def _llm_type(self) -> str:
-        """Return type of chat model."""
+        """Return the type of chat model."""
         return "watsonx-chat"
 
     def _get_ls_params(
@@ -385,8 +485,9 @@ class ChatWatsonx(BaseChatModel):
     ) -> LangSmithParams:
         """Get standard params for tracing."""
         params = super()._get_ls_params(stop=stop, **kwargs)
-        params["ls_provider"] = "together"
-        params["ls_model_name"] = self.model_id
+        params["ls_provider"] = "ibm"
+        if self.model_id:
+            params["ls_model_name"] = self.model_id
         return params
 
     @property
@@ -412,94 +513,82 @@ class ChatWatsonx(BaseChatModel):
             "instance_id": "WATSONX_INSTANCE_ID",
         }
 
-    @root_validator()
-    def validate_environment(cls, values: Dict) -> Dict:
+    @model_validator(mode="after")
+    def validate_environment(self) -> Self:
         """Validate that credentials and python package exists in environment."""
-        values["url"] = convert_to_secret_str(
-            get_from_dict_or_env(values, "url", "WATSONX_URL")
-        )
-        if "cloud.ibm.com" in values.get("url", "").get_secret_value():
-            values["apikey"] = convert_to_secret_str(
-                get_from_dict_or_env(values, "apikey", "WATSONX_APIKEY")
+        if isinstance(self.watsonx_client, APIClient):
+            watsonx_model = ModelInference(
+                model_id=self.model_id,
+                params=self.params,
+                api_client=self.watsonx_client,
+                project_id=self.project_id,
+                space_id=self.space_id,
+                verify=self.verify,
             )
+            self.watsonx_model = watsonx_model
+
         else:
-            if (
-                not values["token"]
-                and "WATSONX_TOKEN" not in os.environ
-                and not values["password"]
-                and "WATSONX_PASSWORD" not in os.environ
-                and not values["apikey"]
-                and "WATSONX_APIKEY" not in os.environ
-            ):
-                raise ValueError(
-                    "Did not find 'token', 'password' or 'apikey',"
-                    " please add an environment variable"
-                    " `WATSONX_TOKEN`, 'WATSONX_PASSWORD' or 'WATSONX_APIKEY' "
-                    "which contains it,"
-                    " or pass 'token', 'password' or 'apikey'"
-                    " as a named parameter."
-                )
-            elif values["token"] or "WATSONX_TOKEN" in os.environ:
-                values["token"] = convert_to_secret_str(
-                    get_from_dict_or_env(values, "token", "WATSONX_TOKEN")
-                )
-            elif values["password"] or "WATSONX_PASSWORD" in os.environ:
-                values["password"] = convert_to_secret_str(
-                    get_from_dict_or_env(values, "password", "WATSONX_PASSWORD")
-                )
-                values["username"] = convert_to_secret_str(
-                    get_from_dict_or_env(values, "username", "WATSONX_USERNAME")
-                )
-            elif values["apikey"] or "WATSONX_APIKEY" in os.environ:
-                values["apikey"] = convert_to_secret_str(
-                    get_from_dict_or_env(values, "apikey", "WATSONX_APIKEY")
-                )
-                values["username"] = convert_to_secret_str(
-                    get_from_dict_or_env(values, "username", "WATSONX_USERNAME")
-                )
-            if not values["instance_id"] or "WATSONX_INSTANCE_ID" not in os.environ:
-                values["instance_id"] = convert_to_secret_str(
-                    get_from_dict_or_env(values, "instance_id", "WATSONX_INSTANCE_ID")
-                )
-        credentials = Credentials(
-            url=values["url"].get_secret_value() if values["url"] else None,
-            api_key=values["apikey"].get_secret_value() if values["apikey"] else None,
-            token=values["token"].get_secret_value() if values["token"] else None,
-            password=values["password"].get_secret_value()
-            if values["password"]
-            else None,
-            username=values["username"].get_secret_value()
-            if values["username"]
-            else None,
-            instance_id=values["instance_id"].get_secret_value()
-            if values["instance_id"]
-            else None,
-            version=values["version"].get_secret_value() if values["version"] else None,
-            verify=values["verify"],
-        )
+            check_for_attribute(self.url, "url", "WATSONX_URL")
 
-        watsonx_chat = ModelInference(
-            model_id=values["model_id"],
-            deployment_id=values["deployment_id"],
-            credentials=credentials,
-            params=values["params"],
-            project_id=values["project_id"],
-            space_id=values["space_id"],
-        )
-        values["watsonx_model"] = watsonx_chat
+            if "cloud.ibm.com" in self.url.get_secret_value():
+                check_for_attribute(self.apikey, "apikey", "WATSONX_APIKEY")
+            else:
+                if not self.token and not self.password and not self.apikey:
+                    raise ValueError(
+                        "Did not find 'token', 'password' or 'apikey',"
+                        " please add an environment variable"
+                        " `WATSONX_TOKEN`, 'WATSONX_PASSWORD' or 'WATSONX_APIKEY' "
+                        "which contains it,"
+                        " or pass 'token', 'password' or 'apikey'"
+                        " as a named parameter."
+                    )
+                elif self.token:
+                    check_for_attribute(self.token, "token", "WATSONX_TOKEN")
+                elif self.password:
+                    check_for_attribute(self.password, "password", "WATSONX_PASSWORD")
+                    check_for_attribute(self.username, "username", "WATSONX_USERNAME")
+                elif self.apikey:
+                    check_for_attribute(self.apikey, "apikey", "WATSONX_APIKEY")
+                    check_for_attribute(self.username, "username", "WATSONX_USERNAME")
 
-        return values
+                if not self.instance_id:
+                    check_for_attribute(
+                        self.instance_id, "instance_id", "WATSONX_INSTANCE_ID"
+                    )
+
+            credentials = Credentials(
+                url=self.url.get_secret_value() if self.url else None,
+                api_key=self.apikey.get_secret_value() if self.apikey else None,
+                token=self.token.get_secret_value() if self.token else None,
+                password=self.password.get_secret_value() if self.password else None,
+                username=self.username.get_secret_value() if self.username else None,
+                instance_id=self.instance_id.get_secret_value()
+                if self.instance_id
+                else None,
+                version=self.version.get_secret_value() if self.version else None,
+                verify=self.verify,
+            )
+
+            watsonx_chat = ModelInference(
+                model_id=self.model_id,
+                deployment_id=self.deployment_id,
+                credentials=credentials,
+                params=self.params,
+                project_id=self.project_id,
+                space_id=self.space_id,
+            )
+            self.watsonx_model = watsonx_chat
+
+        return self
 
     def _generate(
         self,
         messages: List[BaseMessage],
         stop: Optional[List[str]] = None,
         run_manager: Optional[CallbackManagerForLLMRun] = None,
-        stream: Optional[bool] = None,
         **kwargs: Any,
     ) -> ChatResult:
-        should_stream = stream if stream is not None else self.streaming
-        if should_stream:
+        if self.streaming:
             stream_iter = self._stream(
                 messages, stop=stop, run_manager=run_manager, **kwargs
             )
@@ -662,29 +751,30 @@ Remember to end your response with '</endoftext>'
             del kwargs["tool_choice"]
 
         default_chunk_class: Type[BaseMessageChunk] = AIMessageChunk
+        base_generation_info: dict = {}
 
-        for chunk in self.watsonx_model.generate_text_stream(
-            prompt=chat_prompt, raw_response=True, **(kwargs | {"params": params})
+        is_first_chunk = True
+        is_first_tool_chunk = True
+
+        for chunk in self.watsonx_model.chat_stream(
+            messages=message_dicts, **(kwargs | {"params": params})
         ):
             if not isinstance(chunk, dict):
-                chunk = chunk.dict()
-            if len(chunk["results"]) == 0:
-                continue
-            choice = chunk["results"][0]
-
-            message_chunk = _convert_delta_to_message_chunk(choice, default_chunk_class)
-            generation_info = {}
-            if finish_reason := choice.get("stop_reason"):
-                generation_info["finish_reason"] = finish_reason
-            logprobs = choice.get("logprobs")
-            if logprobs:
-                generation_info["logprobs"] = logprobs
-            chunk = ChatGenerationChunk(
-                message=message_chunk, generation_info=generation_info or None
+                chunk = chunk.model_dump()
+            generation_chunk = _convert_chunk_to_generation_chunk(
+                chunk,
+                default_chunk_class,
+                base_generation_info if is_first_chunk else {},
+                is_first_chunk,
+                is_first_tool_chunk,
             )
+            if generation_chunk is None:
+                continue
+            default_chunk_class = generation_chunk.message.__class__
+            logprobs = (generation_chunk.generation_info or {}).get("logprobs")
             if run_manager:
                 run_manager.on_llm_new_token(
-                    chunk.content, chunk=chunk, logprobs=logprobs
+                    generation_chunk.text, chunk=generation_chunk, logprobs=logprobs
                 )
 
             yield chunk
@@ -752,60 +842,64 @@ Remember to end your response with '</endoftext>'
     def _create_message_dicts(
         self, messages: List[BaseMessage], stop: Optional[List[str]], **kwargs: Any
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        params = {**self.params} if self.params else {}
-        params = params | {**kwargs.get("params", {})}
+        params = (
+            {
+                **(
+                    self.params.to_dict()
+                    if isinstance(self.params, BaseSchema)
+                    else self.params
+                )
+            }
+            if self.params
+            else {}
+        )
+        params = params | {
+            **(
+                kwargs.get("params", {}).to_dict()
+                if isinstance(kwargs.get("params", {}), BaseSchema)
+                else kwargs.get("params", {})
+            )
+        }
         if stop is not None:
             if params and "stop_sequences" in params:
                 raise ValueError(
                     "`stop_sequences` found in both the input and default params."
                 )
             params = (params or {}) | {"stop_sequences": stop}
-        message_dicts = [_convert_message_to_dict(m) for m in messages]
+        message_dicts = [_convert_message_to_dict(m, self.model_id) for m in messages]
         return message_dicts, params
 
-    def _create_chat_result(self, response: Union[dict]) -> ChatResult:
+    def _create_chat_result(
+        self, response: dict, generation_info: Optional[Dict] = None
+    ) -> ChatResult:
         generations = []
-        sum_of_total_generated_tokens = 0
-        sum_of_total_input_tokens = 0
-        call_id = ""
-        date_string = response.get("created_at")
-        if date_string:
-            date_object = datetime.strptime(date_string, "%Y-%m-%dT%H:%M:%S.%fZ")
-            call_id = str(date_object.timestamp())
 
         if response.get("error"):
             raise ValueError(response.get("error"))
 
-        for res in response["results"]:
-            message = _convert_dict_to_message(res, call_id)
-            generation_info = dict(finish_reason=res.get("stop_reason"))
+        token_usage = response.get("usage", {})
+
+        for res in response["choices"]:
+            message = _convert_dict_to_message(res["message"], response["id"])
+
+            if token_usage and isinstance(message, AIMessage):
+                message.usage_metadata = _create_usage_metadata(token_usage, True)
+            generation_info = generation_info or {}
+            generation_info["finish_reason"] = (
+                res.get("finish_reason")
+                if res.get("finish_reason") is not None
+                else generation_info.get("finish_reason")
+            )
             if "logprobs" in res:
                 generation_info["logprobs"] = res["logprobs"]
-            if "generated_token_count" in res:
-                sum_of_total_generated_tokens += res["generated_token_count"]
-            if "input_token_count" in res:
-                sum_of_total_input_tokens += res["input_token_count"]
-            total_token = sum_of_total_generated_tokens + sum_of_total_input_tokens
-            if total_token and isinstance(message, AIMessage):
-                message.usage_metadata = {
-                    "input_tokens": sum_of_total_input_tokens,
-                    "output_tokens": sum_of_total_generated_tokens,
-                    "total_tokens": total_token,
-                }
-            gen = ChatGeneration(
-                message=message,
-                generation_info=generation_info,
-            )
+            gen = ChatGeneration(message=message, generation_info=generation_info)
             generations.append(gen)
-        token_usage = {
-            "generated_token_count": sum_of_total_generated_tokens,
-            "input_token_count": sum_of_total_input_tokens,
-        }
         llm_output = {
             "token_usage": token_usage,
-            "model_name": self.model_id,
+            "model_name": response.get("model_id", self.model_id),
             "system_fingerprint": response.get("system_fingerprint", ""),
         }
+
         return ChatResult(generations=generations, llm_output=llm_output)
 
     def bind_functions(
@@ -862,7 +956,11 @@ Remember to end your response with '</endoftext>'
 
     def bind_tools(
         self,
-        tools: Sequence[Union[Dict[str, Any], Type[BaseModel], Callable, BaseTool]],
+        tools: Sequence[Union[Dict[str, Any], Type, Callable, BaseTool]],
+        *,
+        tool_choice: Optional[
+            Union[dict, str, Literal["auto", "none", "required", "any"], bool]
+        ] = None,
         **kwargs: Any,
     ) -> Runnable[LanguageModelInput, BaseMessage]:
         """Bind tool-like objects to this chat model.
@@ -883,12 +981,50 @@ Remember to end your response with '</endoftext>'
         #     )
 
         formatted_tools = [convert_to_openai_tool(tool) for tool in tools]
+        if tool_choice:
+            if isinstance(tool_choice, str):
+                # tool_choice is a tool/function name
+                if tool_choice not in ("auto", "none", "any", "required"):
+                    tool_choice = {
+                        "type": "function",
+                        "function": {"name": tool_choice},
+                    }
+                # We support 'any' since other models use this instead of 'required'.
+                if tool_choice == "any":
+                    tool_choice = "required"
+            elif isinstance(tool_choice, bool):
+                tool_choice = "required"
+            elif isinstance(tool_choice, dict):
+                tool_names = [
+                    formatted_tool["function"]["name"]
+                    for formatted_tool in formatted_tools
+                ]
+                if not any(
+                    tool_name == tool_choice["function"]["name"]
+                    for tool_name in tool_names
+                ):
+                    raise ValueError(
+                        f"Tool choice {tool_choice} was specified, but the only "
+                        f"provided tools were {tool_names}."
+                    )
+            else:
+                raise ValueError(
+                    f"Unrecognized tool_choice type. Expected str, bool or dict. "
+                    f"Received: {tool_choice}"
+                )
+
+            if isinstance(tool_choice, str):
+                kwargs["tool_choice_option"] = tool_choice
+            else:
+                kwargs["tool_choice"] = tool_choice
+        else:
+            kwargs["tool_choice_option"] = "auto"
 
         return super().bind(tools=formatted_tools, **kwargs)
 
     def with_structured_output(
         self,
-        schema: Optional[Union[Dict, Type[BaseModel]]] = None,
+        schema: Optional[Union[Dict, Type]] = None,
         *,
         method: Literal["function_calling", "json_mode"] = "function_calling",
         include_raw: bool = False,
@@ -936,7 +1072,7 @@ Remember to end your response with '</endoftext>'
             .. code-block:: python
 
                 from langchain_ibm import ChatWatsonx
-                from langchain_core.pydantic_v1 import BaseModel
+                from pydantic import BaseModel
 
                 class AnswerWithJustification(BaseModel):
                     '''An answer to the user question along with justification for the answer.'''
@@ -957,7 +1093,7 @@ Remember to end your response with '</endoftext>'
             .. code-block:: python
 
                 from langchain_ibm import ChatWatsonx
-                from langchain_core.pydantic_v1 import BaseModel
+                from pydantic import BaseModel
 
                 class AnswerWithJustification(BaseModel):
                     '''An answer to the user question along with justification for the answer.'''
@@ -978,7 +1114,7 @@ Remember to end your response with '</endoftext>'
             .. code-block:: python
 
                 from langchain_ibm import ChatWatsonx
-                from langchain_core.pydantic_v1 import BaseModel
+                from pydantic import BaseModel
                 from langchain_core.utils.function_calling import convert_to_openai_tool
 
                 class AnswerWithJustification(BaseModel):
@@ -1000,7 +1136,7 @@ Remember to end your response with '</endoftext>'
             .. code-block::
 
                 from langchain_ibm import ChatWatsonx
-                from langchain_core.pydantic_v1 import BaseModel
+                from pydantic import BaseModel
 
                 class AnswerWithJustification(BaseModel):
                     answer: str
@@ -1047,14 +1183,17 @@ Remember to end your response with '</endoftext>'
         """  # noqa: E501
         if kwargs:
             raise ValueError(f"Received unsupported arguments {kwargs}")
-        is_pydantic_schema = _is_pydantic_class(schema)
+        is_pydantic_schema = isinstance(schema, type) and is_basemodel_subclass(schema)
         if method == "function_calling":
             if schema is None:
                 raise ValueError(
                     "schema must be specified when method is 'function_calling'. "
                     "Received None."
                 )
-            llm = self.bind_tools([schema], tool_choice=True)
+            # specifying a tool.
+            tool_name = convert_to_openai_tool(schema)["function"]["name"]
+            tool_choice = {"type": "function", "function": {"name": tool_name}}
+            llm = self.bind_tools([schema], tool_choice=tool_choice)
             if is_pydantic_schema:
                 output_parser: OutputParserLike = PydanticToolsParser(
                     tools=[schema],  # type: ignore[list-item]
@@ -1072,12 +1211,6 @@ Remember to end your response with '</endoftext>'
                 if is_pydantic_schema
                 else JsonOutputParser()
             )
-        else:
-            raise ValueError(
-                f"Unrecognized method argument. Expected one of 'function_calling' or "
-                f"'json_format'. Received: '{method}'"
-            )
-
         if include_raw:
             parser_assign = RunnablePassthrough.assign(
                 parsed=itemgetter("raw") | output_parser, parsing_error=lambda _: None
@@ -1093,3 +1226,40 @@ Remember to end your response with '</endoftext>'
 
 def _is_pydantic_class(obj: Any) -> bool:
     return isinstance(obj, type) and issubclass(obj, BaseModel)
+
+
+def _lc_tool_call_to_watsonx_tool_call(tool_call: ToolCall) -> dict:
+    return {
+        "type": "function",
+        "id": tool_call["id"],
+        "function": {
+            "name": tool_call["name"],
+            "arguments": json.dumps(tool_call["args"]),
+        },
+    }
+
+
+def _lc_invalid_tool_call_to_watsonx_tool_call(
+    invalid_tool_call: InvalidToolCall,
+) -> dict:
+    return {
+        "type": "function",
+        "id": invalid_tool_call["id"],
+        "function": {
+            "name": invalid_tool_call["name"],
+            "arguments": invalid_tool_call["args"],
+        },
+    }
+
+
+def _create_usage_metadata(
+    oai_token_usage: dict, is_first_chunk: bool
+) -> UsageMetadata:
+    input_tokens = oai_token_usage.get("prompt_tokens", 0) if is_first_chunk else 0
+    output_tokens = oai_token_usage.get("completion_tokens", 0)
+    total_tokens = oai_token_usage.get("total_tokens", input_tokens + output_tokens)
+    return UsageMetadata(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+    )
